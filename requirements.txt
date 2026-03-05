@@ -1,0 +1,7 @@
+click 
+textual 
+sgp4 
+sqlalchemy 
+httpx 
+geographiclib 
+numpy
