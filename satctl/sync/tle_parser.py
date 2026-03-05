@@ -152,7 +152,13 @@ def validate_tle_line(line: str, expected_line_number: int) -> bool:
     Returns:
         True if checksum is valid.
     """
-    if len(line) < 69:
+    if expected_line_number not in (1, 2):
+        return False
+
+    if len(line) != 69:
+        return False
+
+    if not line.startswith(str(expected_line_number)):
         return False
 
     # Extract characters to check (everything except the checksum character)
@@ -167,5 +173,8 @@ def validate_tle_line(line: str, expected_line_number: int) -> bool:
             checksum += 1
 
     # Mod 10 of checksum should equal the last character
+    if not line[68].isdigit():
+        return False
+
     expected = int(line[68])
     return checksum % 10 == expected

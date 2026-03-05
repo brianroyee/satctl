@@ -17,8 +17,8 @@ class TestTLEParser:
     def test_parse_tle_line(self):
         """Test parsing NORAD ID and epoch from TLE lines."""
         # ISS TLE (sample)
-        line1 = "1 25544U 98067A   24064.50000000  .00016717  00000-0  30000-3 0  9993"
-        line2 = "2 25544  51.6400 208.9166 0006707  35.0742 325.0284 15.49820237440256"
+        line1 = "1 25544U 98067A   24064.50000000  .00016717  00000-0  30000-3 0  9999"
+        line2 = "2 25544  51.6400 208.9166 0006707  35.0742 325.0284 15.49820237440251"
 
         norad_id, epoch = parse_tle_line(line1, line2)
 
@@ -58,11 +58,12 @@ STARLINK-1001
     def test_validate_tle_line(self):
         """Test TLE checksum validation."""
         # Valid TLE line with correct checksum
-        line1 = "1 25544U 98067A   24064.50000000  .00016717  00000-0  30000-3 0 9993"
+        line1 = "1 25544U 98067A   24064.50000000  .00016717  00000-0  30000-3 0  9999"
+        line2 = "2 25544  51.6400 208.9166 0006707  35.0742 325.0284 15.49820237440251"
 
-        # Note: The last digit is the checksum, which should match
-        # This is a simplified test - real validation is more complex
-        assert len(line1) == 69
+        assert validate_tle_line(line1, 1)
+        assert validate_tle_line(line2, 2)
+        assert not validate_tle_line(line1, 2)
 
     def test_tle_age(self):
         """Test TLE age calculation."""

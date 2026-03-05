@@ -56,6 +56,72 @@ satctl search "starlink"
 satctl now --id 25544
 ```
 
+## Run Locally (Step-by-Step)
+
+Follow these exact steps to run `satctl` on your machine.
+
+1. **Clone the repo and enter it**
+
+   ```bash
+   git clone https://github.com/satctl/satctl.git
+   cd satctl
+   ```
+
+2. **Create and activate a virtual environment**
+
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   ```
+
+3. **Install the project in editable mode**
+
+   ```bash
+   pip install -e .
+   ```
+
+   For development tools and tests:
+
+   ```bash
+   pip install -e ".[dev]"
+   ```
+
+4. **Initialize local data**
+
+   ```bash
+   satctl init
+   ```
+
+5. **Download a satellite catalog**
+
+   ```bash
+   satctl sync
+   ```
+
+6. **Verify it is working**
+
+   ```bash
+   satctl status
+   satctl search "ISS"
+   satctl now --id 25544
+   ```
+
+7. **Launch the interactive dashboard (optional)**
+
+   ```bash
+   satctl tui
+   ```
+
+### Optional: Use a custom data directory
+
+By default, satctl stores data in `~/.local/share/satctl/`. To override this:
+
+```bash
+export SATCTL_DATA_DIR=/path/to/satctl-data
+```
+
+Then run `satctl init` again to initialize that location.
+
 ## Usage
 
 ### Commands
