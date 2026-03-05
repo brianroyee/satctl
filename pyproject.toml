@@ -29,7 +29,6 @@ dependencies = [
     "sqlalchemy>=2.0.0",
     "httpx>=0.25.0",
     "geographiclib>=2.0",
-    "numpy>=1.24.0",
 ]
 
 [project.optional-dependencies]
@@ -38,6 +37,10 @@ dev = [
     "pytest-cov>=4.1.0",
     "ruff>=0.1.0",
     "mypy>=1.7.0",
+    "skyfield>=1.50",
+    "jplephem>=2.20",
+    "numpy",
+        
 ]
 
 [project.scripts]
