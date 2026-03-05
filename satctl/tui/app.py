@@ -203,6 +203,7 @@ class SatTUIApp(App):
         """Compose the UI."""
         # Header
         yield Header(show_clock=True)
+        yield Static(id="header-bar")
 
         # Main content
         with Container(id="main"):
@@ -226,6 +227,7 @@ class SatTUIApp(App):
                 yield Static("Select a satellite", id="detail-content")
 
         # Footer
+        yield Static(id="footer-bar")
         yield Footer()
 
     def on_mount(self) -> None:
