@@ -30,12 +30,15 @@ def cli(ctx: click.Context) -> None:
 @cli.command()
 @click.option("--force", is_flag=True, help="Force reinitialize if database exists")
 @click.pass_obj
-def init(config: Config) -> None:
+def init(config: Config, force: bool) -> None:
     """Initialize satctl environment."""
     click.echo("Initializing satctl...")
 
     # Ensure data directory exists
     config.ensure_data_dir()
+
+    if config.database_path.exists() and force:
+        config.database_path.unlink()
 
     # Create database
     create_database(config.database_path)
