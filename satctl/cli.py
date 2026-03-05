@@ -99,34 +99,44 @@ def sync(config: Config, catalogs: str, timeout: float) -> None:
             if tle_iter is None:
                 continue
 
-            for tle_data in tle_iter:
-                try:
-                    # Upsert satellite
-                    sat = sat_repo.upsert_satellite(
-                        norad_id=tle_data.norad_id,
-                        name=tle_data.name,
-                        source=catalog,
-                    )
-
-                    # Check if this is a new TLE
-                    existing_tle = tle_repo.get_latest_tle(tle_data.norad_id)
-
-                    if existing_tle is None or existing_tle.epoch < tle_data.epoch:
-                        # Insert new TLE
-                        tle_repo.upsert_tle(
+            # Convert iterator to list to get count for progress bar
+            # Note: For very large catalogs this might use more memory, but better UX
+            tle_list = list(tle_iter)
+            
+            with click.progressbar(
+                tle_list, 
+                label=f"  Processing {catalog}",
+                show_pos=True,
+                item_show_func=lambda x: x.name if x else ""
+            ) as bar:
+                for tle_data in bar:
+                    try:
+                        # Upsert satellite
+                        sat = sat_repo.upsert_satellite(
                             norad_id=tle_data.norad_id,
-                            epoch=tle_data.epoch,
-                            line1=tle_data.line1,
-                            line2=tle_data.line2,
+                            name=tle_data.name,
+                            source=catalog,
                         )
 
-                        if existing_tle is None:
-                            satellites_added += 1
-                        else:
-                            satellites_updated += 1
+                        # Check if this is a new TLE
+                        existing_tle = tle_repo.get_latest_tle(tle_data.norad_id)
 
-                except Exception as e:
-                    errors.append(f"Error processing {tle_data.name}: {e}")
+                        if existing_tle is None or existing_tle.epoch < tle_data.epoch:
+                            # Insert new TLE
+                            tle_repo.upsert_tle(
+                                norad_id=tle_data.norad_id,
+                                epoch=tle_data.epoch,
+                                line1=tle_data.line1,
+                                line2=tle_data.line2,
+                            )
+
+                            if existing_tle is None:
+                                satellites_added += 1
+                            else:
+                                satellites_updated += 1
+
+                    except Exception as e:
+                        errors.append(f"Error processing {tle_data.name}: {e}")
 
     # Run async sync
     asyncio.run(do_sync())
