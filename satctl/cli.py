@@ -14,8 +14,9 @@ from satctl.config import Config, get_config
 from satctl.database.schema import create_database
 from satctl.database.repository import SatelliteRepository, TLERepository, SyncLogRepository
 from satctl.sync.celestrak import CelesTrakClient
-from satctl.propagation.sgp4_engine import SGP4Engine
+from satctl.propagation.skyfield_engine import SkyfieldEngine
 from satctl.tui.app import run_tui
+from satctl.region import BBoxRegion, RadiusRegion, CountryRegion, PassDetector
 
 
 @click.group()
@@ -255,9 +256,9 @@ def now(config: Config, norad_id: int) -> None:
         sys.exit(1)
 
     # Calculate position
-    sgp4 = SGP4Engine()
-    satellite = sgp4.create_satellite_from_tle_model(tle)
-    position = sgp4.propagate(satellite, datetime.utcnow())
+    engine = SkyfieldEngine()
+    satellite = engine.create_satellite_from_tle_model(tle)
+    position = engine.propagate(satellite, datetime.utcnow())
 
     if not position:
         click.echo(f"Failed to calculate position for {sat.name}.")
@@ -306,6 +307,105 @@ def tui(config: Config, refresh: float, limit: int, group: str | None) -> None:
 def main() -> None:
     """Main entry point."""
     cli(obj=None)
+
+
+@cli.group()
+def region() -> None:
+    """Monitor satellites over geographic regions."""
+    pass
+
+
+def run_region_monitor(config: Config, region_obj, passes: bool, stats: bool) -> None:
+    """Helper to run the region monitoring."""
+    if not config.database_path.exists():
+        click.echo("Database not initialized. Run 'satctl init' first.")
+        sys.exit(1)
+
+    sat_repo = SatelliteRepository(config.database_path)
+    tle_repo = TLERepository(config.database_path)
+    tles = tle_repo.get_all_latest_tles()
+
+    click.echo(f"Region Monitor")
+    click.echo(f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n")
+
+    engine = SkyfieldEngine()
+    now = datetime.utcnow()
+    
+    positions = []
+    
+    for tle in tles:
+        sat = engine.create_satellite_from_tle_model(tle)
+        pos = engine.propagate(sat, now)
+        if pos:
+            positions.append(pos)
+
+    inside_objects = [p for p in positions if region_obj.contains(p.latitude, p.longitude)]
+
+    click.echo(f"Objects inside region: {len(inside_objects)}")
+    
+    if stats:
+        breakdown = {}
+        for obj in inside_objects:
+            # Example heuristic breakdown since orbital_class is the only metadata we reliably have computed. 
+            # Ideally this uses Object_Type from SATCAT if available, but for the CLI output requirement
+            # we can approximate or use orbit class. Let's group by orbital_class.
+            breakdown[obj.orbital_class] = breakdown.get(obj.orbital_class, 0) + 1
+            
+        click.echo("\nBreakdown (by Orbit):")
+        for k, v in breakdown.items():
+            click.echo(f"{k}: {v}")
+
+    if passes and inside_objects:
+        click.echo("\nRecent Passes")
+        header = f"{'NORAD ID':<10} {'Name':<35} {'Orbital Class':<15}"
+        click.echo(header)
+        for obj in inside_objects[:20]: # show first 20 for preview
+            click.echo(f"{obj.norad_id:<10} {obj.name[:33]:<35} {obj.orbital_class:<15}")
+
+
+@region.command()
+@click.argument("name")
+@click.option("--passes", is_flag=True, help="Show recent passes in region")
+@click.option("--stats", is_flag=True, help="Show statistics breakdown")
+@click.pass_obj
+def country(config: Config, name: str, passes: bool, stats: bool) -> None:
+    """Monitor a specific country region."""
+    try:
+        region_obj = CountryRegion(name)
+        click.echo(f"Region: {name.upper()}")
+        run_region_monitor(config, region_obj, passes, stats)
+    except ValueError as e:
+        click.echo(f"Error: {e}")
+        sys.exit(1)
+
+
+@region.command()
+@click.argument("min_lat", type=float)
+@click.argument("max_lat", type=float)
+@click.argument("min_lon", type=float)
+@click.argument("max_lon", type=float)
+@click.option("--passes", is_flag=True, help="Show recent passes in region")
+@click.option("--stats", is_flag=True, help="Show statistics breakdown")
+@click.pass_obj
+def bbox(config: Config, min_lat: float, max_lat: float, min_lon: float, max_lon: float, passes: bool, stats: bool) -> None:
+    """Monitor a bounding box region."""
+    region_obj = BBoxRegion(min_lat, max_lat, min_lon, max_lon)
+    click.echo(f"Region: BBox({min_lat}, {max_lat}, {min_lon}, {max_lon})")
+    run_region_monitor(config, region_obj, passes, stats)
+
+
+@region.command()
+@click.argument("lat", type=float)
+@click.argument("lon", type=float)
+@click.argument("radius_km", type=float)
+@click.option("--passes", is_flag=True, help="Show recent passes in region")
+@click.option("--stats", is_flag=True, help="Show statistics breakdown")
+@click.pass_obj
+def radius(config: Config, lat: float, lon: float, radius_km: float, passes: bool, stats: bool) -> None:
+    """Monitor a circular radius region."""
+    region_obj = RadiusRegion(lat, lon, radius_km)
+    click.echo(f"Region: Radius({lat}, {lon}, {radius_km}km)")
+    run_region_monitor(config, region_obj, passes, stats)
 
 
 if __name__ == "__main__":

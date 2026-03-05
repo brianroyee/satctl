@@ -15,8 +15,9 @@ from textual.widgets import Header, Footer, Static
 
 from satctl.config import Config, get_config
 from satctl.database.repository import SatelliteRepository, TLERepository, SyncLogRepository
-from satctl.propagation.sgp4_engine import SGP4Engine, SatellitePosition
+from satctl.propagation.skyfield_engine import SkyfieldEngine, SatellitePosition
 from satctl.propagation.utils import Coordinate
+from satctl.region import Region, BBoxRegion, RadiusRegion, CountryRegion, PassDetector
 
 
 class RegionMode(str, Enum):
@@ -164,7 +165,7 @@ class SatTUIApp(App):
         Args:
             config: Configuration instance.
             refresh_rate: Refresh rate in seconds.
-            limit: Maximum number of satellites to display.
+            limit: Maximum number of satellites to display. Default 500.
         """
         super().__init__(**kwargs)
         self.config = config or get_config()
@@ -193,11 +194,16 @@ class SatTUIApp(App):
         self.tle_repo = TLERepository(self.config.database_path)
         self.sync_repo = SyncLogRepository(self.config.database_path)
 
+        # Region tracking
+        self.region_obj: Optional[Region] = None
+        self.pass_detector: Optional[PassDetector] = None
+        self.region_events: list[dict] = []
+
         # Refresh timer
         self._refresh_task: Optional[asyncio.Task] = None
 
-        # SGP4 engine
-        self.sgp4 = SGP4Engine()
+        # Skyfield engine
+        self.engine = SkyfieldEngine()
 
     def compose(self) -> ComposeResult:
         """Compose the UI."""
@@ -215,6 +221,7 @@ class SatTUIApp(App):
                 yield Static(f"Region: {self.region_mode.value}", id="filter-region")
                 yield Static(f"Search: {self.search_query or '(none)'}", id="filter-search")
                 yield Static(f"Limit: {self.limit}", id="filter-limit")
+                yield Static("", id="region-stats", classes="filter-value")
 
             # Content (satellite table)
             with Vertical(id="content"):
@@ -271,8 +278,8 @@ class SatTUIApp(App):
 
             for tle in tles:
                 try:
-                    sat = self.sgp4.create_satellite_from_tle_model(tle)
-                    pos = self.sgp4.propagate(sat, now)
+                    sat = self.engine.create_satellite_from_tle_model(tle)
+                    pos = self.engine.propagate(sat, now)
 
                     if pos:
                         # Apply filters
@@ -283,6 +290,10 @@ class SatTUIApp(App):
                     continue
 
             self.positions = positions
+            
+            # Update region tracking
+            self._update_region_tracking(positions)
+            
             self.update_sat_table()
 
         except Exception as e:
@@ -319,6 +330,42 @@ class SatTUIApp(App):
                 return False
 
         return True
+
+    def _update_region_tracking(self, positions: list[SatellitePosition]) -> None:
+        """Update region statistics and pass detection."""
+        # Setup detector if mode changed
+        if self.region_mode == RegionMode.BBOX and not isinstance(self.region_obj, BBoxRegion):
+            min_lat, max_lat, min_lon, max_lon = self.bbox
+            self.region_obj = BBoxRegion(min_lat, max_lat, min_lon, max_lon)
+            self.pass_detector = PassDetector(self.region_obj)
+            self.region_events = []
+        elif self.region_mode == RegionMode.RADIUS and not isinstance(self.region_obj, RadiusRegion):
+            self.region_obj = RadiusRegion(self.radius_center.latitude, self.radius_center.longitude, self.radius_km)
+            self.pass_detector = PassDetector(self.region_obj)
+            self.region_events = []
+        elif self.region_mode == RegionMode.GLOBAL:
+            self.region_obj = None
+            self.pass_detector = None
+            self.region_events = []
+
+        stats_text = ""
+        if self.pass_detector and self.region_obj:
+            events = self.pass_detector.update(positions)
+            
+            # Keep last 5 events
+            self.region_events.extend(events)
+            self.region_events = self.region_events[-5:]
+            
+            inside_count = self.pass_detector.get_inside_count()
+            
+            stats_text = f"\nStats:\nObjects inside: {inside_count}\n"
+            if self.region_events:
+                stats_text += "\nRecent Activity:\n"
+                for ev in reversed(self.region_events):
+                    sat_name = ev['satellite'].name[:12]
+                    stats_text += f"{ev['type'].upper()}: {sat_name}\n"
+
+        self.query_one("#region-stats", Static).update(stats_text)
 
     def update_sat_table(self) -> None:
         """Update the satellite table display."""
