@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from sqlalchemy import Integer, String, DateTime, Text, Index, ForeignKey
+from sqlalchemy import Integer, String, DateTime, Text, Index, ForeignKey, Float
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
     """Base class for all models."""
-
-    pass
 
 
 class Satellite(Base):
@@ -21,13 +19,18 @@ class Satellite(Base):
     norad_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     source: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
-    )
+    object_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    owner_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    owner_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    operator: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    orbit_class: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    launch_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    # Relationship to TLE
-    tle_records: Mapped[list[TLE]] = relationship(
-        "TLE", back_populates="satellite", cascade="all, delete-orphan"
+    tle_records: Mapped[list[TLE]] = relationship("TLE", back_populates="satellite", cascade="all, delete-orphan")
+    transmitters: Mapped[list[Transmitter]] = relationship(
+        "Transmitter", back_populates="satellite", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:
@@ -40,26 +43,71 @@ class TLE(Base):
     __tablename__ = "tle"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    norad_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("satellite.norad_id"), nullable=False
-    )
+    norad_id: Mapped[int] = mapped_column(Integer, ForeignKey("satellite.norad_id"), nullable=False)
     epoch: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     line1: Mapped[str] = mapped_column(String(130), nullable=False)
     line2: Mapped[str] = mapped_column(String(130), nullable=False)
-    fetched_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow
-    )
+    source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ingested_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-    # Relationship to Satellite
     satellite: Mapped[Satellite] = relationship("Satellite", back_populates="tle_records")
 
-    __table_args__ = (
-        Index("idx_tle_norad", "norad_id"),
-        Index("idx_tle_epoch", "epoch"),
+    __table_args__ = (Index("idx_tle_norad", "norad_id"), Index("idx_tle_epoch", "epoch"))
+
+
+class Transmitter(Base):
+    """Signal transmitter metadata."""
+
+    __tablename__ = "transmitter"
+
+    tx_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    norad_id: Mapped[int] = mapped_column(Integer, ForeignKey("satellite.norad_id"), nullable=False)
+    frequency: Mapped[float] = mapped_column(Float, nullable=False)
+    mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    bandwidth: Mapped[float | None] = mapped_column(Float, nullable=True)
+    first_seen: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_seen: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    source: Mapped[str] = mapped_column(String(64), default="derived")
+    confidence: Mapped[float] = mapped_column(Float, default=0.5)
+
+    satellite: Mapped[Satellite] = relationship("Satellite", back_populates="transmitters")
+    observations: Mapped[list[Observation]] = relationship(
+        "Observation", back_populates="transmitter", cascade="all, delete-orphan"
     )
 
-    def __repr__(self) -> str:
-        return f"<TLE(norad_id={self.norad_id}, epoch={self.epoch})>"
+
+class Observation(Base):
+    """Signal observation records."""
+
+    __tablename__ = "observation"
+
+    obs_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    norad_id: Mapped[int] = mapped_column(Integer, ForeignKey("satellite.norad_id"), nullable=False)
+    tx_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("transmitter.tx_id"), nullable=True)
+    station_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    region: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source: Mapped[str] = mapped_column(String(64), default="derived")
+    raw_metadata: Mapped[str | None] = mapped_column("metadata", Text, nullable=True)
+
+    transmitter: Mapped[Transmitter | None] = relationship("Transmitter", back_populates="observations")
+
+
+class Anomaly(Base):
+    """Anomaly records generated by satctl intelligence engines."""
+
+    __tablename__ = "anomaly"
+
+    anom_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    severity: Mapped[str] = mapped_column(String(16), default="medium")
+    type: Mapped[str] = mapped_column(String(32), nullable=False)
+    norad_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tx_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    region: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="open")
 
 
 class SyncLog(Base):
@@ -73,6 +121,3 @@ class SyncLog(Base):
     satellites_added: Mapped[int] = mapped_column(Integer, default=0)
     satellites_updated: Mapped[int] = mapped_column(Integer, default=0)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    def __repr__(self) -> str:
-        return f"<SyncLog(id={self.id}, started_at={self.started_at})>"

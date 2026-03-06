@@ -1,0 +1,181 @@
+Screen {
+    background: #0d1117;
+    color: #c9d1d9;
+}
+
+/* ── Header ── */
+HeaderBar {
+    height: 1;
+    dock: top;
+    background: #161b22;
+}
+
+/* ── Footer ── */
+Footer {
+    dock: bottom;
+}
+
+/* ── Catalog Screen ── */
+#catalog-container {
+    height: 1fr;
+    layout: vertical;
+}
+
+#catalog-header {
+    height: 3;
+    background: #161b22;
+    border-bottom: solid #30363d;
+    padding: 0 1;
+}
+
+#catalog-table {
+    height: 1fr;
+}
+
+#catalog-details {
+    height: 12;
+    border-top: solid #30363d;
+    background: #161b22;
+}
+
+/* ── Region Monitor Screen ── */
+#region-container {
+    height: 1fr;
+    layout: horizontal;
+}
+
+#region-table {
+    width: 1fr;
+    height: 1fr;
+}
+
+#region-sidebar {
+    width: 55;
+    border-left: solid #30363d;
+    layout: vertical;
+}
+
+/* Map toggle states */
+#region-sidebar.map-off {
+    display: none;
+}
+
+#region-sidebar.map-mini {
+    width: 45;
+}
+
+#region-sidebar.map-full {
+    width: 80;
+}
+
+#region-map {
+    height: 22;
+    background: #0d1117;
+}
+
+#region-log-container {
+    height: 1fr;
+    border-top: solid #30363d;
+}
+
+.log-label {
+    height: 1;
+    background: #161b22;
+    text-style: bold;
+    color: #8b949e;
+}
+
+RichLog {
+    height: 1fr;
+    background: #0d1117;
+}
+
+#region-details {
+    height: 12;
+    border-top: solid #30363d;
+    background: #161b22;
+}
+
+/* ── Traffic Screen ── */
+#traffic-body {
+    height: 1fr;
+}
+
+#traffic-table {
+    width: 60%;
+}
+
+#traffic-sidebar {
+    width: 40%;
+    border-left: solid #30363d;
+    background: #161b22;
+}
+
+.sidebar-label {
+    height: 1;
+    background: #0d1117;
+    color: #58a6ff;
+    padding: 0 1;
+    text-style: bold;
+}
+
+#anomaly-feed {
+    height: 1fr;
+    background: #0d1117;
+}
+
+#traffic-details {
+    height: 15;
+    border-top: solid #30363d;
+}
+
+/* ── DataTable ── */
+DataTable {
+    height: 100%;
+    background: #0d1117;
+    color: #c9d1d9;
+}
+
+DataTable>.datatable--header {
+    background: #161b22;
+    color: #58a6ff;
+    text-style: bold;
+}
+
+DataTable>.datatable--cursor {
+    background: #1f6feb;
+    color: white;
+}
+
+/* ── Region Input Modal ── */
+RegionInputModal {
+    align: center middle;
+    background: rgba(13, 17, 23, 0.8);
+}
+
+#region-input-dialog {
+    width: 40;
+    height: 10;
+    padding: 1 2;
+    background: #161b22;
+    border: solid #58a6ff;
+}
+
+#region-input-label {
+    text-align: center;
+    width: 100%;
+    margin-bottom: 1;
+    text-style: bold;
+    color: #c9d1d9;
+}
+
+#region-input {
+    width: 100%;
+    border: none;
+    background: #0d1117;
+    color: white;
+}
+
+#region-input:focus {
+    border: none;
+}
