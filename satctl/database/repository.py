@@ -2,76 +2,54 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Iterator
 
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
-from satctl.database.models import Satellite, TLE, SyncLog
+from satctl.database.models import Satellite, TLE, SyncLog, Transmitter, Observation, Anomaly
 from satctl.database.schema import get_session
 
 
-class SatelliteRepository:
-    """Repository for satellite data operations."""
-
+class BaseRepository:
     def __init__(self, db_path: Path):
-        """Initialize the repository.
-
-        Args:
-            db_path: Path to the SQLite database file.
-        """
         self.db_path = db_path
 
     def _get_session(self) -> Session:
-        """Get a new database session."""
         return get_session(self.db_path)
 
+
+class SatelliteRepository(BaseRepository):
+    """Repository for satellite data operations."""
+
     def get_all_satellites(self) -> list[Satellite]:
-        """Get all satellites from the database."""
         with self._get_session() as session:
-            stmt = select(Satellite)
-            return list(session.execute(stmt).scalars().all())
+            return list(session.execute(select(Satellite)).scalars().all())
 
     def get_satellite(self, norad_id: int) -> Satellite | None:
-        """Get a satellite by NORAD ID."""
         with self._get_session() as session:
-            stmt = select(Satellite).where(Satellite.norad_id == norad_id)
-            return session.execute(stmt).scalar_one_or_none()
+            return session.execute(select(Satellite).where(Satellite.norad_id == norad_id)).scalar_one_or_none()
 
     def get_satellites_by_name(self, name_pattern: str, limit: int = 100) -> list[Satellite]:
-        """Search satellites by name pattern."""
         with self._get_session() as session:
-            stmt = (
-                select(Satellite)
-                .where(Satellite.name.ilike(f"%{name_pattern}%"))
-                .limit(limit)
-            )
+            stmt = select(Satellite).where(Satellite.name.ilike(f"%{name_pattern}%")).limit(limit)
             return list(session.execute(stmt).scalars().all())
 
     def get_satellite_count(self) -> int:
-        """Get the total count of satellites."""
         with self._get_session() as session:
-            stmt = select(func.count()).select_from(Satellite)
-            return session.execute(stmt).scalar_one()
+            return session.execute(select(func.count()).select_from(Satellite)).scalar_one()
 
     def upsert_satellite(self, norad_id: int, name: str, source: str | None = None) -> Satellite:
-        """Insert or update a satellite."""
         with self._get_session() as session:
-            stmt = select(Satellite).where(Satellite.norad_id == norad_id)
-            satellite = session.execute(stmt).scalar_one_or_none()
-
+            satellite = session.execute(select(Satellite).where(Satellite.norad_id == norad_id)).scalar_one_or_none()
             if satellite:
                 satellite.name = name
                 satellite.source = source
+                satellite.last_seen_at = datetime.utcnow()
                 satellite.updated_at = datetime.utcnow()
             else:
-                satellite = Satellite(
-                    norad_id=norad_id,
-                    name=name,
-                    source=source,
-                )
+                satellite = Satellite(norad_id=norad_id, name=name, source=source, last_seen_at=datetime.utcnow())
                 session.add(satellite)
 
             session.commit()
@@ -79,119 +57,142 @@ class SatelliteRepository:
             return satellite
 
 
-class TLERepository:
+class TLERepository(BaseRepository):
     """Repository for TLE data operations."""
 
-    def __init__(self, db_path: Path):
-        """Initialize the repository.
-
-        Args:
-            db_path: Path to the SQLite database file.
-        """
-        self.db_path = db_path
-
-    def _get_session(self) -> Session:
-        """Get a new database session."""
-        return get_session(self.db_path)
-
     def get_latest_tle(self, norad_id: int) -> TLE | None:
-        """Get the latest TLE for a satellite."""
         with self._get_session() as session:
-            stmt = (
-                select(TLE)
-                .where(TLE.norad_id == norad_id)
-                .order_by(TLE.epoch.desc())
-                .limit(1)
-            )
+            stmt = select(TLE).where(TLE.norad_id == norad_id).order_by(TLE.epoch.desc()).limit(1)
             return session.execute(stmt).scalar_one_or_none()
 
-    def get_latest_tles(self, norad_ids: list[int]) -> dict[int, TLE]:
-        """Get the latest TLE for multiple satellites."""
-        if not norad_ids:
-            return {}
-
-        with self._get_session() as session:
-            # Subquery to get max epoch per norad_id
-            subquery = (
-                select(TLE.norad_id, func.max(TLE.epoch).label("max_epoch"))
-                .where(TLE.norad_id.in_(norad_ids))
-                .group_by(TLE.norad_id)
-                .subquery()
-            )
-
-            stmt = (
-                select(TLE)
-                .join(
-                    subquery,
-                    (TLE.norad_id == subquery.c.norad_id)
-                    & (TLE.epoch == subquery.c.max_epoch),
-                )
-            )
-
-            results = session.execute(stmt).scalars().all()
-            return {tle.norad_id: tle for tle in results}
-
     def get_all_latest_tles(self) -> list[TLE]:
-        """Get the latest TLE for all satellites."""
         with self._get_session() as session:
-            # Subquery to get max epoch per norad_id
-            subquery = (
-                select(TLE.norad_id, func.max(TLE.epoch).label("max_epoch"))
-                .group_by(TLE.norad_id)
-                .subquery()
-            )
-
-            stmt = (
-                select(TLE)
-                .join(
-                    subquery,
-                    (TLE.norad_id == subquery.c.norad_id)
-                    & (TLE.epoch == subquery.c.max_epoch),
-                )
-            )
-
+            subquery = select(TLE.norad_id, func.max(TLE.epoch).label("max_epoch")).group_by(TLE.norad_id).subquery()
+            stmt = select(TLE).join(subquery, (TLE.norad_id == subquery.c.norad_id) & (TLE.epoch == subquery.c.max_epoch))
             return list(session.execute(stmt).scalars().all())
 
-    def upsert_tle(
-        self, norad_id: int, epoch: datetime, line1: str, line2: str
-    ) -> TLE:
-        """Insert or update a TLE record."""
+    def upsert_tle(self, norad_id: int, epoch: datetime, line1: str, line2: str, source: str | None = None) -> TLE:
         with self._get_session() as session:
-            tle = TLE(
-                norad_id=norad_id,
-                epoch=epoch,
-                line1=line1,
-                line2=line2,
-            )
+            tle = TLE(norad_id=norad_id, epoch=epoch, line1=line1, line2=line2, source=source)
             session.add(tle)
             session.commit()
             session.refresh(tle)
             return tle
 
     def get_tle_count(self) -> int:
-        """Get the total count of TLE records."""
         with self._get_session() as session:
-            stmt = select(func.count()).select_from(TLE)
-            return session.execute(stmt).scalar_one()
+            return session.execute(select(func.count()).select_from(TLE)).scalar_one()
 
 
-class SyncLogRepository:
-    """Repository for sync log operations."""
+class SignalRepository(BaseRepository):
+    """Repository for signal intelligence operations."""
 
-    def __init__(self, db_path: Path):
-        """Initialize the repository.
+    def upsert_transmitter(
+        self,
+        tx_id: str,
+        norad_id: int,
+        frequency: float,
+        mode: str | None = None,
+        bandwidth: float | None = None,
+        source: str = "derived",
+        confidence: float = 0.5,
+    ) -> Transmitter:
+        now = datetime.utcnow()
+        with self._get_session() as session:
+            tx = session.get(Transmitter, tx_id)
+            if tx:
+                tx.frequency = frequency
+                tx.mode = mode
+                tx.bandwidth = bandwidth
+                tx.last_seen = now
+                tx.source = source
+                tx.confidence = confidence
+            else:
+                tx = Transmitter(
+                    tx_id=tx_id,
+                    norad_id=norad_id,
+                    frequency=frequency,
+                    mode=mode,
+                    bandwidth=bandwidth,
+                    first_seen=now,
+                    last_seen=now,
+                    source=source,
+                    confidence=confidence,
+                )
+                session.add(tx)
+            session.commit()
+            session.refresh(tx)
+            return tx
 
-        Args:
-            db_path: Path to the SQLite database file.
-        """
-        self.db_path = db_path
+    def add_observation(
+        self,
+        norad_id: int,
+        tx_id: str | None,
+        region: str | None,
+        station_id: str | None = None,
+        source: str = "derived",
+        metadata: str | None = None,
+    ) -> Observation:
+        with self._get_session() as session:
+            obs = Observation(
+                norad_id=norad_id,
+                tx_id=tx_id,
+                region=region,
+                station_id=station_id,
+                source=source,
+                raw_metadata=metadata,
+            )
+            session.add(obs)
+            session.commit()
+            session.refresh(obs)
+            return obs
 
-    def _get_session(self) -> Session:
-        """Get a new database session."""
-        return get_session(self.db_path)
+    def get_signal_activity(self, hours: int = 24) -> list[tuple[int, int]]:
+        window_start = datetime.utcnow() - timedelta(hours=hours)
+        with self._get_session() as session:
+            stmt = (
+                select(Observation.norad_id, func.count(Observation.obs_id).label("count"))
+                .where(Observation.timestamp >= window_start)
+                .group_by(Observation.norad_id)
+                .order_by(func.count(Observation.obs_id).desc())
+            )
+            return [(row[0], row[1]) for row in session.execute(stmt).all()]
 
+
+class AnomalyRepository(BaseRepository):
+    def create_anomaly(
+        self,
+        anomaly_type: str,
+        description: str,
+        severity: str = "medium",
+        norad_id: int | None = None,
+        tx_id: str | None = None,
+        region: str | None = None,
+    ) -> Anomaly:
+        with self._get_session() as session:
+            anomaly = Anomaly(
+                type=anomaly_type,
+                description=description,
+                severity=severity,
+                norad_id=norad_id,
+                tx_id=tx_id,
+                region=region,
+            )
+            session.add(anomaly)
+            session.commit()
+            session.refresh(anomaly)
+            return anomaly
+
+    def list_recent(self, limit: int = 50, status: str | None = None) -> list[Anomaly]:
+        with self._get_session() as session:
+            stmt = select(Anomaly).order_by(Anomaly.timestamp.desc()).limit(limit)
+            if status:
+                stmt = stmt.where(Anomaly.status == status)
+            return list(session.execute(stmt).scalars().all())
+
+
+class SyncLogRepository(BaseRepository):
     def create_sync(self) -> SyncLog:
-        """Create a new sync log entry."""
         with self._get_session() as session:
             sync = SyncLog(started_at=datetime.utcnow())
             session.add(sync)
@@ -199,14 +200,7 @@ class SyncLogRepository:
             session.refresh(sync)
             return sync
 
-    def complete_sync(
-        self,
-        sync_id: int,
-        satellites_added: int = 0,
-        satellites_updated: int = 0,
-        error_message: str | None = None,
-    ) -> SyncLog:
-        """Complete a sync log entry."""
+    def complete_sync(self, sync_id: int, satellites_added: int = 0, satellites_updated: int = 0, error_message: str | None = None) -> SyncLog | None:
         with self._get_session() as session:
             sync = session.get(SyncLog, sync_id)
             if sync:
@@ -219,12 +213,6 @@ class SyncLogRepository:
             return sync
 
     def get_last_sync(self) -> SyncLog | None:
-        """Get the last completed sync."""
         with self._get_session() as session:
-            stmt = (
-                select(SyncLog)
-                .where(SyncLog.completed_at.isnot(None))
-                .order_by(SyncLog.completed_at.desc())
-                .limit(1)
-            )
+            stmt = select(SyncLog).where(SyncLog.completed_at.isnot(None)).order_by(SyncLog.completed_at.desc()).limit(1)
             return session.execute(stmt).scalar_one_or_none()
