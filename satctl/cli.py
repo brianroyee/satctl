@@ -24,7 +24,6 @@ from satctl.providers import (
     SatnogsObservationProvider,
     SatnogsTransmitterProvider,
 )
-from satctl.tui.app import run_tui
 
 
 @click.group()
@@ -129,6 +128,7 @@ def sync(config: Config, catalogs: str, timeout: float, retries: int) -> None:
         if tx_error:
             errors.append(tx_error)
         for tx in tx_records:
+            existing_tx = signal_repo.get_transmitter(tx.tx_id)
             signal_repo.upsert_transmitter(
                 tx_id=tx.tx_id,
                 norad_id=tx.norad_id,
@@ -138,13 +138,14 @@ def sync(config: Config, catalogs: str, timeout: float, retries: int) -> None:
                 source=tx.source,
                 confidence=tx.confidence,
             )
-            anomaly_repo.create_anomaly(
-                anomaly_type="RF_APPEAR",
-                description=f"New/updated transmitter {tx.tx_id} for NORAD {tx.norad_id}.",
-                severity="low",
-                norad_id=tx.norad_id,
-                tx_id=tx.tx_id,
-            )
+            if existing_tx is None:
+                anomaly_repo.create_anomaly(
+                    anomaly_type="RF_APPEAR",
+                    description=f"New transmitter {tx.tx_id} for NORAD {tx.norad_id}.",
+                    severity="low",
+                    norad_id=tx.norad_id,
+                    tx_id=tx.tx_id,
+                )
 
         obs_records, obs_error = await satnogs_obs.fetch_recent_observations(limit=1000)
         if obs_error:
@@ -161,7 +162,7 @@ def sync(config: Config, catalogs: str, timeout: float, retries: int) -> None:
 
         _, satcat_error = await satcat.fetch_metadata()
         if satcat_error:
-            click.echo(f"  {satcat_error}")
+            errors.append(satcat_error)
 
     asyncio.run(do_sync())
 
@@ -203,6 +204,8 @@ def monitor(config: Config, region: str | None, refresh: float, limit: int) -> N
     group = None
     if region:
         group = f"region:{region.strip().lower()}"
+    from satctl.tui.app import run_tui
+
     run_tui(config=config, refresh_rate=refresh, limit=limit, group=group)
 
 

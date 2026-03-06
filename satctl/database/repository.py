@@ -5,10 +5,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from satctl.database.models import Satellite, TLE, SyncLog, Transmitter, Observation, Anomaly
+from satctl.database.models import Anomaly, Observation, Satellite, SyncLog, TLE, Transmitter
 from satctl.database.schema import get_session
 
 
@@ -29,7 +29,8 @@ class SatelliteRepository(BaseRepository):
 
     def get_satellite(self, norad_id: int) -> Satellite | None:
         with self._get_session() as session:
-            return session.execute(select(Satellite).where(Satellite.norad_id == norad_id)).scalar_one_or_none()
+            stmt = select(Satellite).where(Satellite.norad_id == norad_id)
+            return session.execute(stmt).scalar_one_or_none()
 
     def get_satellites_by_name(self, name_pattern: str, limit: int = 100) -> list[Satellite]:
         with self._get_session() as session:
@@ -42,14 +43,16 @@ class SatelliteRepository(BaseRepository):
 
     def upsert_satellite(self, norad_id: int, name: str, source: str | None = None) -> Satellite:
         with self._get_session() as session:
-            satellite = session.execute(select(Satellite).where(Satellite.norad_id == norad_id)).scalar_one_or_none()
+            stmt = select(Satellite).where(Satellite.norad_id == norad_id)
+            satellite = session.execute(stmt).scalar_one_or_none()
+            now = datetime.utcnow()
             if satellite:
                 satellite.name = name
                 satellite.source = source
-                satellite.last_seen_at = datetime.utcnow()
-                satellite.updated_at = datetime.utcnow()
+                satellite.last_seen_at = now
+                satellite.updated_at = now
             else:
-                satellite = Satellite(norad_id=norad_id, name=name, source=source, last_seen_at=datetime.utcnow())
+                satellite = Satellite(norad_id=norad_id, name=name, source=source, last_seen_at=now)
                 session.add(satellite)
 
             session.commit()
@@ -68,7 +71,10 @@ class TLERepository(BaseRepository):
     def get_all_latest_tles(self) -> list[TLE]:
         with self._get_session() as session:
             subquery = select(TLE.norad_id, func.max(TLE.epoch).label("max_epoch")).group_by(TLE.norad_id).subquery()
-            stmt = select(TLE).join(subquery, (TLE.norad_id == subquery.c.norad_id) & (TLE.epoch == subquery.c.max_epoch))
+            stmt = select(TLE).join(
+                subquery,
+                (TLE.norad_id == subquery.c.norad_id) & (TLE.epoch == subquery.c.max_epoch),
+            )
             return list(session.execute(stmt).scalars().all())
 
     def upsert_tle(self, norad_id: int, epoch: datetime, line1: str, line2: str, source: str | None = None) -> TLE:
@@ -86,6 +92,10 @@ class TLERepository(BaseRepository):
 
 class SignalRepository(BaseRepository):
     """Repository for signal intelligence operations."""
+
+    def get_transmitter(self, tx_id: str) -> Transmitter | None:
+        with self._get_session() as session:
+            return session.get(Transmitter, tx_id)
 
     def upsert_transmitter(
         self,
@@ -200,7 +210,13 @@ class SyncLogRepository(BaseRepository):
             session.refresh(sync)
             return sync
 
-    def complete_sync(self, sync_id: int, satellites_added: int = 0, satellites_updated: int = 0, error_message: str | None = None) -> SyncLog | None:
+    def complete_sync(
+        self,
+        sync_id: int,
+        satellites_added: int = 0,
+        satellites_updated: int = 0,
+        error_message: str | None = None,
+    ) -> SyncLog | None:
         with self._get_session() as session:
             sync = session.get(SyncLog, sync_id)
             if sync:
