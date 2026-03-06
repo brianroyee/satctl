@@ -20,6 +20,7 @@ from satctl.database.repository import (
 )
 from satctl.sync.celestrak import CelesTrakClient
 from satctl.tui.app import run_tui
+from satctl.app.cli_sync_service import CliSyncService
 
 
 @click.group()
@@ -68,87 +69,31 @@ def sync(config: Config, catalogs: str, timeout: float, retries: int) -> None:
     catalog_list = [c.strip() for c in catalogs.split(",") if c.strip()]
     client = CelesTrakClient(timeout=timeout, retries=retries, cache_dir=config.cache_dir)
 
-    satellites_added = 0
-    satellites_updated = 0
-    errors: list[str] = []
-    previous_tle_map = {tle.norad_id: tle for tle in tle_repo.get_all_latest_tles()}
+    service = CliSyncService(
+        sat_repo=sat_repo,
+        tle_repo=tle_repo,
+        signal_repo=signal_repo,
+        anomaly_repo=anomaly_repo,
+        sync_repo=sync_repo,
+    )
 
-    async def do_sync() -> None:
-        nonlocal satellites_added, satellites_updated
-        for catalog in catalog_list:
-            click.echo(f"Fetching {catalog}...")
-            tle_iter, error = await client.fetch_catalog(catalog)
-            if error:
-                click.echo(f"  {error}")
-                if "Using cached data" not in error:
-                    errors.append(f"{catalog}: {error}")
-            if tle_iter is None:
-                continue
-
-            for tle_data in tle_iter:
-                sat_repo.upsert_satellite(tle_data.norad_id, tle_data.name, source=catalog)
-                existing_tle = previous_tle_map.get(tle_data.norad_id)
-                if existing_tle is None:
-                    satellites_added += 1
-                elif existing_tle.epoch < tle_data.epoch:
-                    satellites_updated += 1
-                else:
-                    continue
-
-                tle_repo.upsert_tle(
-                    norad_id=tle_data.norad_id,
-                    epoch=tle_data.epoch,
-                    line1=tle_data.line1,
-                    line2=tle_data.line2,
-                    source=catalog,
-                )
-
-                tx_id = f"tx-{tle_data.norad_id}"
-                frequency = 137000000 + (tle_data.norad_id % 3000) * 2500
-                signal_repo.upsert_transmitter(tx_id, tle_data.norad_id, frequency, mode="FM", bandwidth=25000, source="satnogs-derived", confidence=0.55)
-                signal_repo.add_observation(
-                    norad_id=tle_data.norad_id,
-                    tx_id=tx_id,
-                    region=None,
-                    station_id="derived-sync",
-                    source="satnogs-derived",
-                    metadata=f"catalog={catalog}",
-                )
-
-                if existing_tle and existing_tle.line1 != tle_data.line1:
-                    anomaly_repo.create_anomaly(
-                        anomaly_type="ORBIT_SHIFT",
-                        description=f"TLE epoch advanced for NORAD {tle_data.norad_id}.",
-                        severity="medium",
-                        norad_id=tle_data.norad_id,
-                    )
-
-    asyncio.run(do_sync())
-
-    activity = signal_repo.get_signal_activity(hours=1)
-    if activity:
-        max_count = activity[0][1]
-        if max_count > 20:
-            anomaly_repo.create_anomaly(
-                anomaly_type="TRAFFIC_SPIKE",
-                description=f"Elevated signal activity detected: {max_count} observations/hour.",
-                severity="high",
-                region="GLOBAL",
-            )
+    for catalog in catalog_list:
+        click.echo(f"Fetching {catalog}...")
+    summary = asyncio.run(service.run(client=client, catalogs=catalog_list))
 
     sync_repo.complete_sync(
         sync_log.id,
-        satellites_added=satellites_added,
-        satellites_updated=satellites_updated,
-        error_message="; ".join(errors) if errors else None,
+        satellites_added=summary.satellites_added,
+        satellites_updated=summary.satellites_updated,
+        error_message="; ".join(summary.errors) if summary.errors else None,
     )
 
     click.echo("\nSync complete")
-    click.echo(f"  Satellites added: {satellites_added}")
-    click.echo(f"  Satellites updated: {satellites_updated}")
+    click.echo(f"  Satellites added: {summary.satellites_added}")
+    click.echo(f"  Satellites updated: {summary.satellites_updated}")
     click.echo(f"  Total in database: {sat_repo.get_satellite_count()}")
-    if errors:
-        click.echo(f"  Provider errors: {len(errors)}")
+    if summary.errors:
+        click.echo(f"  Provider errors: {len(summary.errors)}")
 
 
 @cli.command()
