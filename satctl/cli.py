@@ -10,15 +10,20 @@ import click
 
 from satctl import __version__
 from satctl.config import Config, get_config
-from satctl.database.schema import create_database
 from satctl.database.repository import (
-    SatelliteRepository,
-    TLERepository,
-    SyncLogRepository,
-    SignalRepository,
     AnomalyRepository,
+    SatelliteRepository,
+    SignalRepository,
+    SyncLogRepository,
+    TLERepository,
 )
-from satctl.sync.celestrak import CelesTrakClient
+from satctl.database.schema import create_database
+from satctl.providers import (
+    CelesTrakProvider,
+    SatcatProvider,
+    SatnogsObservationProvider,
+    SatnogsTransmitterProvider,
+)
 from satctl.tui.app import run_tui
 
 
@@ -66,75 +71,108 @@ def sync(config: Config, catalogs: str, timeout: float, retries: int) -> None:
 
     sync_log = sync_repo.create_sync()
     catalog_list = [c.strip() for c in catalogs.split(",") if c.strip()]
-    client = CelesTrakClient(timeout=timeout, retries=retries, cache_dir=config.cache_dir)
+    previous_tle_map = {tle.norad_id: tle for tle in tle_repo.get_all_latest_tles()}
 
     satellites_added = 0
     satellites_updated = 0
     errors: list[str] = []
-    previous_tle_map = {tle.norad_id: tle for tle in tle_repo.get_all_latest_tles()}
 
     async def do_sync() -> None:
         nonlocal satellites_added, satellites_updated
+
+        celestrak = CelesTrakProvider(timeout=timeout, retries=retries, cache_dir=config.cache_dir)
+        satnogs_tx = SatnogsTransmitterProvider(timeout=timeout, retries=retries)
+        satnogs_obs = SatnogsObservationProvider(timeout=timeout, retries=retries)
+        satcat = SatcatProvider()
+
         for catalog in catalog_list:
-            click.echo(f"Fetching {catalog}...")
-            tle_iter, error = await client.fetch_catalog(catalog)
+            click.echo(f"Fetching CelesTrak catalog: {catalog}...")
+            records, error = await celestrak.fetch_catalog(catalog)
             if error:
                 click.echo(f"  {error}")
-                if "Using cached data" not in error:
-                    errors.append(f"{catalog}: {error}")
-            if tle_iter is None:
-                continue
+                if "Using cached" not in error:
+                    errors.append(error)
 
-            for tle_data in tle_iter:
-                sat_repo.upsert_satellite(tle_data.norad_id, tle_data.name, source=catalog)
-                existing_tle = previous_tle_map.get(tle_data.norad_id)
+            for record in records:
+                sat_repo.upsert_satellite(record.norad_id, record.name, source=record.source)
+                existing_tle = previous_tle_map.get(record.norad_id)
                 if existing_tle is None:
                     satellites_added += 1
-                elif existing_tle.epoch < tle_data.epoch:
+                    anomaly_repo.create_anomaly(
+                        anomaly_type="NEW_OBJECT",
+                        description=f"New object detected in catalog: NORAD {record.norad_id}",
+                        severity="low",
+                        norad_id=record.norad_id,
+                    )
+                elif existing_tle.epoch < record.epoch:
                     satellites_updated += 1
                 else:
                     continue
 
                 tle_repo.upsert_tle(
-                    norad_id=tle_data.norad_id,
-                    epoch=tle_data.epoch,
-                    line1=tle_data.line1,
-                    line2=tle_data.line2,
-                    source=catalog,
+                    norad_id=record.norad_id,
+                    epoch=record.epoch,
+                    line1=record.line1,
+                    line2=record.line2,
+                    source=record.source,
                 )
 
-                tx_id = f"tx-{tle_data.norad_id}"
-                frequency = 137000000 + (tle_data.norad_id % 3000) * 2500
-                signal_repo.upsert_transmitter(tx_id, tle_data.norad_id, frequency, mode="FM", bandwidth=25000, source="satnogs-derived", confidence=0.55)
-                signal_repo.add_observation(
-                    norad_id=tle_data.norad_id,
-                    tx_id=tx_id,
-                    region=None,
-                    station_id="derived-sync",
-                    source="satnogs-derived",
-                    metadata=f"catalog={catalog}",
-                )
-
-                if existing_tle and existing_tle.line1 != tle_data.line1:
+                if existing_tle and existing_tle.line1 != record.line1:
                     anomaly_repo.create_anomaly(
                         anomaly_type="ORBIT_SHIFT",
-                        description=f"TLE epoch advanced for NORAD {tle_data.norad_id}.",
+                        description=f"TLE changed for NORAD {record.norad_id}.",
                         severity="medium",
-                        norad_id=tle_data.norad_id,
+                        norad_id=record.norad_id,
                     )
+
+        tx_records, tx_error = await satnogs_tx.fetch_transmitters(limit=3000)
+        if tx_error:
+            errors.append(tx_error)
+        for tx in tx_records:
+            signal_repo.upsert_transmitter(
+                tx_id=tx.tx_id,
+                norad_id=tx.norad_id,
+                frequency=tx.frequency,
+                mode=tx.mode,
+                bandwidth=tx.bandwidth,
+                source=tx.source,
+                confidence=tx.confidence,
+            )
+            anomaly_repo.create_anomaly(
+                anomaly_type="RF_APPEAR",
+                description=f"New/updated transmitter {tx.tx_id} for NORAD {tx.norad_id}.",
+                severity="low",
+                norad_id=tx.norad_id,
+                tx_id=tx.tx_id,
+            )
+
+        obs_records, obs_error = await satnogs_obs.fetch_recent_observations(limit=1000)
+        if obs_error:
+            errors.append(obs_error)
+        for obs in obs_records:
+            signal_repo.add_observation(
+                norad_id=obs.norad_id,
+                tx_id=obs.tx_id,
+                region=obs.region,
+                station_id=obs.station_id,
+                source=obs.source,
+                metadata=obs.metadata,
+            )
+
+        _, satcat_error = await satcat.fetch_metadata()
+        if satcat_error:
+            click.echo(f"  {satcat_error}")
 
     asyncio.run(do_sync())
 
     activity = signal_repo.get_signal_activity(hours=1)
-    if activity:
-        max_count = activity[0][1]
-        if max_count > 20:
-            anomaly_repo.create_anomaly(
-                anomaly_type="TRAFFIC_SPIKE",
-                description=f"Elevated signal activity detected: {max_count} observations/hour.",
-                severity="high",
-                region="GLOBAL",
-            )
+    if activity and activity[0][1] > 100:
+        anomaly_repo.create_anomaly(
+            anomaly_type="TRAFFIC_SPIKE",
+            description=f"Elevated signal activity detected: {activity[0][1]} observations/hour.",
+            severity="high",
+            region="GLOBAL",
+        )
 
     sync_repo.complete_sync(
         sync_log.id,
@@ -157,16 +195,39 @@ def sync(config: Config, catalogs: str, timeout: float, retries: int) -> None:
 @click.option("--limit", default=500, help="Maximum satellites to display")
 @click.pass_obj
 def monitor(config: Config, region: str | None, refresh: float, limit: int) -> None:
-    """Launch the intelligence dashboard (default global traffic)."""
+    """Launch the intelligence dashboard."""
     if not config.database_path.exists():
         click.echo("No satellite data available. Run satctl sync.")
         sys.exit(1)
 
     group = None
     if region:
-        normalized = region.strip().lower()
-        group = f"region:{normalized}"
+        group = f"region:{region.strip().lower()}"
     run_tui(config=config, refresh_rate=refresh, limit=limit, group=group)
+
+
+@cli.command(name="catalog")
+@click.option("--limit", default=50, help="Maximum rows")
+@click.pass_obj
+def catalog_cmd(config: Config, limit: int) -> None:
+    """Show satellite catalog with signal counts."""
+    if not config.database_path.exists():
+        click.echo("No satellite data available. Run satctl sync.")
+        sys.exit(1)
+
+    sat_repo = SatelliteRepository(config.database_path)
+    signal_repo = SignalRepository(config.database_path)
+    signal_counts = dict(signal_repo.get_signal_activity(hours=24))
+    sats = sat_repo.get_all_satellites()[:limit]
+
+    header = f"{'NORAD':<8} {'NAME':<28} {'OWNER':<8} {'ORBIT':<6} {'LAST SEEN':<17} {'SIGNALS':<7}"
+    click.echo(header)
+    click.echo("-" * len(header))
+    for sat in sats:
+        seen = sat.last_seen_at.strftime("%Y-%m-%d %H:%M") if sat.last_seen_at else "-"
+        click.echo(
+            f"{sat.norad_id:<8} {sat.name[:28]:<28} {(sat.owner_code or '-'):<8} {(sat.orbit_class or '-'):<6} {seen:<17} {signal_counts.get(sat.norad_id, 0):<7}"
+        )
 
 
 @cli.command(name="anomalies")
@@ -194,30 +255,6 @@ def anomalies_cmd(config: Config, limit: int, status: str | None) -> None:
         )
 
 
-@cli.command(name="catalog")
-@click.option("--limit", default=50, help="Maximum rows")
-@click.pass_obj
-def catalog_cmd(config: Config, limit: int) -> None:
-    """Show satellite catalog with signal counts."""
-    if not config.database_path.exists():
-        click.echo("No satellite data available. Run satctl sync.")
-        sys.exit(1)
-
-    sat_repo = SatelliteRepository(config.database_path)
-    signal_repo = SignalRepository(config.database_path)
-    signal_counts = dict(signal_repo.get_signal_activity(hours=24))
-    sats = sat_repo.get_all_satellites()[:limit]
-
-    header = f"{'NORAD':<8} {'NAME':<28} {'OWNER':<8} {'ORBIT':<6} {'LAST SEEN':<17} {'SIGNALS':<7}"
-    click.echo(header)
-    click.echo("-" * len(header))
-    for sat in sats:
-        seen = sat.last_seen_at.strftime("%Y-%m-%d %H:%M") if sat.last_seen_at else "-"
-        click.echo(
-            f"{sat.norad_id:<8} {sat.name[:28]:<28} {(sat.owner_code or '-'): <8} {(sat.orbit_class or '-'):<6} {seen:<17} {signal_counts.get(sat.norad_id, 0):<7}"
-        )
-
-
 @cli.command()
 @click.pass_obj
 def status(config: Config) -> None:
@@ -237,16 +274,6 @@ def status(config: Config) -> None:
     if last_sync and last_sync.completed_at:
         age = datetime.utcnow() - last_sync.completed_at
         click.echo(f"Last sync: {last_sync.completed_at.strftime('%Y-%m-%d %H:%M:%S')} UTC ({age.seconds // 3600}h ago)")
-
-
-@cli.command(hidden=True)
-@click.option("--refresh", default=1.5)
-@click.option("--limit", default=500)
-@click.option("--group", default=None)
-@click.pass_obj
-def tui(config: Config, refresh: float, limit: int, group: str | None) -> None:
-    """Backward-compatible alias for monitor."""
-    run_tui(config=config, refresh_rate=refresh, limit=limit, group=group)
 
 
 def main() -> None:
